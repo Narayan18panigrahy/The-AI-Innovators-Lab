@@ -1,100 +1,100 @@
-                    return jsonify({"error": f"SQL Execution Failed: {db_error_feedback}. LLM retry returned empty SQL."}), 500
-                sql_query_to_execute = corrected_sql
-                session['last_generated_sql'] = sql_query_to_execute # Update stored SQL
-                app.logger.info(f"LLM generated corrected SQL (attempt {attempt+2}): {sql_query_to_execute[:200]}...")
-                attempt += 1
-                continue # Retry execution
-            else:
-                app.logger.error(f"Max retries reached for SQL execution session {session_id}. Final error: {db_error_feedback}")
-                return jsonify({"error": f"SQL Execution Failed after {max_retries+1} attempts: {db_error_feedback}"}), 500
-        else:
-            # SQL Success
-            session.pop('last_query_error', None)
-            session['last_query_result_raw'] = results_df # Store for NL Answer Agent
-            app.logger.info(f"SQL query executed successfully session {session_id}.")
-            break # Exit retry loop
+def apply_cleaning_endpoint():
+    session_id = session.get('session_id');
+    if not session_id:
+        return jsonify({"error": "Session not found"}), 400
+    working_df = load_df(session_id, 'working') # Load from parquet
+    if working_df is None:
+        return jsonify({"error": "Working data (parquet) not found."}), 404
+    data = request.json
+    actions = data.get('actions') if isinstance(data, dict) else None
+    if not isinstance(actions, list):
+        return jsonify({"error": "Invalid 'actions' list."}), 400
+    if not actions:
+        return jsonify({"message": "No actions provided.", "logs": [], "data_preview": None}), 200 # Added data_preview
+    try:
+        modified_df, logs = cleaner.apply_cleaning_steps(working_df, actions)
+        save_df(session_id, 'working', modified_df) # Save modified parquet
 
-    # --- Generate Natural Language Answer from SQL results ---
-    nl_answer = None # Initialize
-    nl_gen_error = None
-    llm_skipped_due_to_size = False
+        base_table_name = session.get('dataframe_name', 'cleaned_data').rsplit('.', 1)[0]
+        new_pg_table, new_pg_schema = database_agent.create_table_from_df(modified_df, base_table_name)
+        if not new_pg_table:
+            return jsonify({"error": "Failed to update data in database after cleaning."}), 500
+        session['pg_table_name'] = new_pg_table
+        session['pg_schema_for_llm'] = new_pg_schema
 
-    if results_df is not None and session.get('llm_configured'):
-        app.logger.info(f"Generating NL answer for session {session_id}...")
-        original_nl_query = session.get('last_nl_query', "the user's question")
-        llm_config = session.get('llm_config')
+        clear_downstream_session_state("cleaning")
+        app.logger.info(f"Applied cleaning session {session_id}. DB table '{new_pg_table}' updated.")
 
-        # Call the updated NLAnswerAgent method
-        answer_text, error_msg, llm_was_called = nl_answer_generator.generate_nl_answer(
-            original_question=original_nl_query,
-            data_results=results_df,
-            llm_config=llm_config,
-            max_input_tokens=500 # Or make configurable
-        )
+        preview_df = modified_df.head(MAX_PREVIEW_ROWS)
+        # Using orient='split' is good for reconstructing DataFrame in JS
+        data_preview_json = preview_df.to_json(orient="split", date_format="iso", default_handler=str)
 
-        if not llm_was_called:
-            # LLM was skipped due to data size
-            nl_answer = "The data result is too large to generate a natural language summary. Displaying raw data snippet."
-            llm_skipped_due_to_size = True
-            app.logger.warning(f"NL answer skipped due to data size for session {session_id}")
-        elif error_msg:
-            # LLM was called but failed
-            nl_gen_error = error_msg
-            nl_answer = f"Could not generate a natural language answer (Error: {nl_gen_error}). Raw data is available."
-            app.logger.error(f"NL answer generation failed for session {session_id}: {nl_gen_error}")
-        elif answer_text:
-            # LLM was called and succeeded
-            nl_answer = answer_text
-            session['last_nl_answer'] = nl_answer
-            app.logger.info(f"NL Answer generated session {session_id}: {nl_answer[:100]}...")
-        else:
-            # LLM was called but returned empty
-            nl_answer = "Could not generate a natural language answer (LLM returned empty). Raw data is available."
-            app.logger.warning(f"NL answer generation returned empty for session {session_id}")
-
-    elif results_df is not None: # SQL success but LLM not configured
-        nl_answer = "LLM not configured for natural language summary. Displaying raw data."
-
-    # --- Prepare Response ---
-    raw_data_snippet = None
-    raw_data_type = "NotApplicable"
-    if results_df is not None:
-        # session['last_query_result_raw'] = results_df # Already stored above
-        max_rows_to_send = 50
-        row_count = len(results_df)
-        try:
-             # Prepare snippet for frontend display
-             if isinstance(results_df, pd.DataFrame):
-                 raw_data_snippet = results_df.head(max_rows_to_send).to_dict(orient="records")
-                 raw_data_type = f"DataFrame (showing first {min(row_count, max_rows_to_send)} of {row_count} rows)"
-             elif isinstance(results_df, pd.Series):
-                  raw_data_snippet = results_df.head(max_rows_to_send).reset_index().to_dict(orient="records")
-                  raw_data_type = f"Series (showing first {min(row_count, max_rows_to_send)} of {row_count} items)"
-             # Add handling for scalar/list if needed, though less likely for SQL results
-             else:
-                 raw_data_snippet = str(results_df) # Fallback
-                 raw_data_type = str(type(results_df).__name__) + " (stringified)"
-
-        except Exception as e:
-            app.logger.error(f"Error preparing raw data snippet for session {session_id}: {e}")
-            raw_data_snippet = "[Error preparing raw data view]"
-            raw_data_type = "Error"
-
-
-    if results_df is not None: # If SQL was successful
         return jsonify({
-            "nl_answer": nl_answer, # The main result for the user
-            "raw_data": raw_data_snippet,
-            "raw_data_type": raw_data_type,
-            "sql_query_executed": sql_query_to_execute,
-            "llm_skipped": llm_skipped_due_to_size # Add flag for frontend
-            }), 200
-    else:
-        # SQL execution failed after retries
-        return jsonify({"error": f"SQL execution failed: {db_error_feedback or 'Unknown execution error'}"}), 500
+            "message": "Cleaning actions applied and data updated.",
+            "logs": logs,
+            "data_preview": data_preview_json # Add data preview to response
+        }), 200
+    except Exception as e:
+        app.logger.error(f"Apply cleaning error session {session_id}: {e}", exc_info=True)
+        return jsonify({"error": f"Failed to apply actions: {e}"}), 500
 
-# --- Cleaning & FE Endpoints (Updated to reload PG table) ---
+@app.route('/api/apply_features', methods=['POST'])
+def apply_features_endpoint():
+    session_id = session.get('session_id');
+    if not session_id:
+        return jsonify({"error": "Session not found"}), 400
+    working_df = load_df(session_id, 'working') # Load from parquet
+    if working_df is None:
+        return jsonify({"error": "Working data (parquet) not found."}), 404
+    data = request.json
+    features_to_create = data.get('features') if isinstance(data, dict) else None
+    if not isinstance(features_to_create, list):
+        return jsonify({"error": "Invalid 'features' list."}), 400
+    if not features_to_create:
+        return jsonify({"message": "No features provided.", "logs": [], "data_preview": None}), 200 # Added data_preview
+    try:
+        modified_df, logs = feature_engineer.apply_features(working_df, features_to_create)
+        save_df(session_id, 'working', modified_df) # Save modified parquet
 
-MAX_PREVIEW_ROWS = 50 # Define how many rows for the preview
+        base_table_name = session.get('dataframe_name', 'engineered_data').rsplit('.', 1)[0]
+        new_pg_table, new_pg_schema = database_agent.create_table_from_df(modified_df, base_table_name)
+        if not new_pg_table:
+            return jsonify({"error": "Failed to update data in database after FE."}), 500
+        session['pg_table_name'] = new_pg_table
+        session['pg_schema_for_llm'] = new_pg_schema
 
-@app.route('/api/apply_cleaning', methods=['POST'])
+        clear_downstream_session_state("feature engineering")
+        app.logger.info(f"Applied features session {session_id}. DB table '{new_pg_table}' updated.")
+
+        preview_df = modified_df.head(MAX_PREVIEW_ROWS)
+        data_preview_json = preview_df.to_json(orient="split", date_format="iso", default_handler=str)
+
+        return jsonify({
+            "message": "Features created successfully.",
+            "logs": logs,
+            "data_preview": data_preview_json # Add data preview to response
+        }), 200
+    except Exception as e:
+        app.logger.error(f"Apply features error session {session_id}: {e}", exc_info=True)
+        return jsonify({"error": f"Failed to create features: {e}"}), 500
+
+@app.route('/api/download_data/excel', methods=['GET'])
+def download_data_excel_endpoint():
+    session_id = session.get('session_id')
+    if not session_id:
+        return jsonify({"error": "Session not found"}), 400
+
+    working_df = load_df(session_id, 'working')
+    if working_df is None:
+        return jsonify({"error": "No working data found to download."}), 404
+
+    dataframe_name = session.get('dataframe_name', 'exported_data')
+    # Basic filename sanitization and ensure .xlsx extension
+    excel_filename = "".join(c if c.isalnum() or c in ['_', '.'] else '_' for c in dataframe_name)
+    if not excel_filename.lower().endswith(('.xlsx', '.xls')):
+        excel_filename += ".xlsx"
+    excel_filename = f"{excel_filename.split('.')[0]}_modified.xlsx"
+
+
+    try:
+        output = BytesIO()
