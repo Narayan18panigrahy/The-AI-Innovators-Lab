@@ -167,11 +167,3 @@ function FeatureEngineeringSection({ onDataModified, setLoading, setError }) {
                             </ListGroup>
                         </div>
                      )}
-
-                </Card.Body>
-            </Card>
-        </div>
-    );
-}
-
-export default FeatureEngineeringSection;
