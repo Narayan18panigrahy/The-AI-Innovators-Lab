@@ -1,100 +1,100 @@
-def get_session_state_endpoint():
-    session_id = session.get('session_id', 'N/A')
-    # Check if PG table exists in session state
-    pg_table_exists = session.get('pg_table_name') is not None
-    return jsonify({
-        "session_id": session_id,
-        "dataframe_name": session.get("dataframe_name"),
-        "llm_config": session.get("llm_config"),
-        "llm_configured": session.get("llm_configured", False),
-        "profile_report": session.get("profile_report"),
-        "working_df_available": pg_table_exists, # Base availability on PG table now
-        "pg_table_name": session.get("pg_table_name") # Return table name if exists
-    })
-
-@app.route('/api/upload', methods=['POST'])
-def upload_file_endpoint():
-    session_id = session.get('session_id', str(uuid.uuid4()))
-    session['session_id'] = session_id
-    app.logger.info(f"Upload request for session {session_id}")
-    if 'file' not in request.files:
-        return jsonify({"error": "No file part"}), 400
-    file = request.files['file']
-    filename = secure_filename(file.filename)
-    if not file or not filename:
-        return jsonify({"error": "No selected file or invalid filename"}), 400
-    if '.' not in filename or filename.rsplit('.', 1)[1].lower() not in ALLOWED_FILE_EXTENSIONS:
-        return jsonify({"error": f"Invalid file type. Allowed: {', '.join(ALLOWED_FILE_EXTENSIONS)}"}), 400
-    try:
-        # Clear previous session state associated with old data
-        keys_to_clear = ['pg_table_name', 'pg_schema_for_llm', 'dataframe_name', 'profile_report', 'ner_report', 'cleaning_suggestions', 'feature_suggestions', 'llm_summary', 'generated_plots_metadata', 'last_nl_query', 'last_query_result_raw', 'last_nl_answer', 'last_query_error', 'last_generated_sql', 'original_df_path', 'working_df_path']
-        for key in keys_to_clear:
-            session.pop(key, None)
-        clean_session_data(session_id) # Clean old temp files
-
-        # Load DataFrame using FileLoadingAgent
-        temp_upload_dir = get_session_data_dir(session_id)
-        temp_upload_path = temp_upload_dir / f"upload_{uuid.uuid4().hex}_{filename}"
-        file.save(temp_upload_path)
-        df = file_loader.load_data(temp_upload_path);
-        try:
-            os.remove(temp_upload_path)
-        except OSError:
-            pass # Ignore if file already gone
-
-        if df is None:
-            return jsonify({"error": "Failed to load data from file"}), 400
-        session['dataframe_name'] = filename # Store original filename
-
-        # --- Create table in PostgreSQL and load data ---
-        base_table_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
-        pg_table_name, pg_schema_for_llm = database_agent.create_table_from_df(df, base_table_name)
-
-        if not pg_table_name or not pg_schema_for_llm:
-            app.logger.error(f"Failed to create/load table in PostgreSQL for session {session_id}")
-            return jsonify({"error": "Failed to prepare data in the database."}), 500
-
-        session['pg_table_name'] = pg_table_name
-        session['pg_schema_for_llm'] = pg_schema_for_llm
-        app.logger.info(f"DataFrame loaded into PostgreSQL table: {pg_table_name} for session {session_id}")
-
-        # --- Save working DF to parquet as well, for agents that might need it ---
-        # This allows cleaning/FE to operate on pandas DF easily before reloading to PG
-        save_df(session_id, 'working', df.copy())
-
-        # Run profiling on the initial DataFrame
-        profile_report = preprocessor.profile(df, {'eps': DEFAULT_DBSCAN_EPS, 'min_samples': DEFAULT_DBSCAN_MIN_SAMPLES})
-        if profile_report is None:
-            app.logger.error(f"Data profiling failed for session {session_id}")
-        session['profile_report'] = profile_report
-
-        app.logger.info(f"File '{filename}' uploaded and processed for session {session_id}.")
-        return jsonify({
-                "message": f"File '{filename}' processed. Data available for querying in table '{pg_table_name}'.",
-                "rows": len(df), "columns": len(df.columns), "profile_report": profile_report, "db_table": pg_table_name
-                }), 200
-
-    except Exception as e:
-        app.logger.error(f"Upload failed for session {session_id}: {e}", exc_info=True)
-        clean_session_data(session_id)
-        session.pop('original_df_path', None)
-        session.pop('working_df_path', None)
-        session.pop('pg_table_name', None) # Clean up state
-        return jsonify({"error": f"An internal error occurred during upload: {str(e)}"}), 500
-
-@app.route('/api/config_llm', methods=['POST'])
-def config_llm_endpoint():
+@app.route('/api/generate_query', methods=['POST'])
+def generate_query_endpoint():
     session_id = session.get('session_id');
     if not session_id:
         return jsonify({"error": "Session not found"}), 400
-    config_data = request.json
-    if not isinstance(config_data, dict) or not all(k in config_data for k in ['provider', 'model_name', 'credentials']):
-        return jsonify({"error": "Invalid LLM configuration data format"}), 400
-    if config_data['provider'] not in SUPPORTED_PROVIDERS:
-        return jsonify({"error": f"Unsupported provider: {config_data['provider']}"}), 400
-    session['llm_config'] = config_data
-    session['llm_configured'] = True
-    app.logger.info(f"LLM Config updated for session {session_id}")
-    return jsonify({"message": "LLM configured successfully", "config": config_data}), 200
+    app.logger.info(f"Generating SQL query for session {session_id}")
+    if not session.get('llm_configured'):
+        return jsonify({"error": "LLM not configured"}), 400
 
-# *** Renamed Endpoint: Generates SQL Query ***
+    # *** Get PG table and schema NAMES from session ***
+    pg_table_name_full = session.get('pg_table_name') # e.g., "public.sample___superstore"
+    if not pg_table_name_full:
+        return jsonify({"error": "Database table information not found in session."}), 404
+
+    data = request.json
+    nl_query = data.get('query') if isinstance(data, dict) else None
+    if not nl_query:
+        return jsonify({"error": "No query provided."}), 400
+
+    # *** Extract schema and table name parts ***
+    # Handle potential quoting if Identifier added them (unlikely for simple names)
+    schema_parts = pg_table_name_full.replace('"', '').split('.')
+    db_schema_name = schema_parts[0] if len(schema_parts) > 1 else DB_DEFAULT_SCHEMA_NAME
+    db_table_name = schema_parts[-1]
+    app.logger.debug(f"Extracted Schema: '{db_schema_name}', Table: '{db_table_name}' for schema lookup.")
+
+    # *** Call the CORRECT DatabaseAgent method to get the schema string ***
+    schema_str = database_agent.get_table_schema_for_llm(db_table_name, db_schema_name)
+    if schema_str.startswith("Error:"):
+        app.logger.error(f"Failed to get schema string for {db_schema_name}.{db_table_name}: {schema_str}")
+        return jsonify({"error": f"Database schema not found or failed to load ({schema_str})."}), 404
+
+    app.logger.debug(f"Schema string being passed to NLtoSQLAgent:\n{schema_str}") # Log the schema string
+
+    # Call NLtoSQLAgent with the formatted schema string
+    sql_query, error = nl_to_sql.generate_sql_query(nl_query, schema_str, session['llm_config'])
+
+    if error:
+        app.logger.error(f"SQL generation failed session {session_id}: {error}")
+        return jsonify({"error": f"SQL generation failed: {error}"}), 500
+    if not sql_query:
+         return jsonify({"error": "SQL generation returned empty result"}), 500
+
+    # Store query info in session
+    session['last_nl_query'] = nl_query
+    session['last_generated_sql'] = sql_query
+    session.pop('last_query_result_raw', None)
+    session.pop('last_nl_answer', None)
+    session.pop('last_query_error', None)
+
+    app.logger.info(f"SQL query generated for session {session_id}")
+    return jsonify({"query": sql_query}), 200 # Return the generated SQL query
+
+# *** Renamed & Refactored Endpoint: Executes SQL and gets NL answer ***
+@app.route('/api/execute_query', methods=['POST'])
+def execute_query_endpoint():
+    session_id = session.get('session_id');
+    if not session_id:
+        return jsonify({"error": "Session not found"}), 400
+
+    data = request.json
+    sql_query_to_execute = data.get('sql_query') if isinstance(data, dict) else session.get('last_generated_sql')
+    if not sql_query_to_execute:
+        return jsonify({"error": "No SQL query provided or found in session."}), 400
+
+    app.logger.info(f"Attempting to execute SQL for session {session_id}: {sql_query_to_execute[:200]}...")
+    original_nl_query = session.get('last_nl_query', "the user's question") # Needed for NL answer
+
+    max_retries = nl_to_sql.MAX_RETRIES # Get from agent
+    attempt = 0
+    results_df = None
+    db_error_feedback = None
+    llm_config = session.get('llm_config')
+    if not llm_config:
+        return jsonify({"error": "LLM config not found in session."}), 400 # Needed for retry
+
+    while attempt <= max_retries:
+        results_df, db_error = database_agent.execute_query(sql_query_to_execute)
+        if db_error:
+            db_error_feedback = str(db_error)
+            session['last_query_error'] = db_error_feedback
+            app.logger.error(f"SQL exec attempt {attempt+1} failed session {session_id}. Error: {db_error_feedback}")
+            if attempt < max_retries:
+                app.logger.info(f"Attempting LLM retry ({attempt+1}/{max_retries}) to fix SQL.")
+                # Get schema string again for retry prompt
+                pg_table_name_full = session.get('pg_table_name')
+                if not pg_table_name_full: return jsonify({"error": "Table name not found for retry."}), 500
+                schema_parts = pg_table_name_full.replace('"', '').split('.')
+                db_schema_name = schema_parts[0] if len(schema_parts) > 1 else DB_DEFAULT_SCHEMA_NAME
+                db_table_name = schema_parts[-1]
+                schema_str = database_agent.get_table_schema_for_llm(db_table_name, db_schema_name)
+                if schema_str.startswith("Error:"): return jsonify({"error": f"Schema not found for retry ({schema_str})."}), 500
+
+                corrected_sql, gen_error = nl_to_sql.generate_sql_query(
+                    nl_question=original_nl_query, schema_str=schema_str, llm_config=llm_config,
+                    previous_query=sql_query_to_execute, db_error=db_error_feedback
+                )
+                if gen_error:
+                    return jsonify({"error": f"SQL Execution Failed: {db_error_feedback}. LLM retry also failed: {gen_error}"}), 500
+                if not corrected_sql:
