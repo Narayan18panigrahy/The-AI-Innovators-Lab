@@ -1,3 +1,363 @@
+/* frontend/src/assets/styles.css */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+:root {
+  --header-height: 60px;
+  --sidebar-width-lg: 300px;
+  --sidebar-width-md: 280px;
+  --sidebar-width-shrunk: 80px;
+
+  --bs-body-font-family: 'Inter', sans-serif;
+  --bs-body-font-size: 0.9rem;
+  --bs-body-line-height: 1.6;
+
+  /* AI Dark Theme Colors */
+  --ai-dark-bg: #0a0f1e; /* Deep space blue */
+  --ai-dark-bg-rgb: 10, 15, 30;
+  --ai-sidebar-bg: #101629; /* Slightly lighter for sidebar */
+  --ai-sidebar-bg-rgb: 16, 22, 41;
+  --ai-card-bg: #161d33; /* Card and component background */
+  --ai-card-bg-rgb: 22, 29, 51;
+  --ai-primary: #00a9ff; /* Vibrant blue accent */
+  --ai-primary-rgb: 0, 169, 255;
+  --ai-primary-hover: #0087cc;
+  --ai-secondary: #506680; /* Muted secondary for borders, less important text */
+  --ai-secondary-rgb: 80, 102, 128;
+  --ai-text: #e0e6f0; /* Light text for readability */
+  --ai-text-muted: #90a4b7; /* Muted text */
+  --ai-border: #2a314b; /* Subtle border */
+  --ai-border-rgb: 42, 49, 75;
+  --ai-glow: rgba(var(--ai-primary-rgb), 0.3);
+  --ai-success: #28a745;
+  --ai-warning: #ffc107;
+  --ai-danger: #dc3545;
+  --ai-info: #17a2b8;
+
+  --bs-primary: var(--ai-primary);
+  --bs-primary-rgb: var(--ai-primary-rgb);
+  --bs-secondary: var(--ai-secondary);
+  --bs-secondary-rgb: var(--ai-secondary-rgb);
+  --bs-success: var(--ai-success);
+  --bs-warning: var(--ai-warning);
+  --bs-danger: var(--ai-danger);
+  --bs-info: var(--ai-info);
+  --bs-light: var(--ai-card-bg); /* Bootstrap light becomes our card bg */
+  --bs-light-rgb: var(--ai-card-bg-rgb);
+  --bs-dark: var(--ai-sidebar-bg); /* Bootstrap dark becomes our sidebar bg */
+  --bs-dark-rgb: var(--ai-sidebar-bg-rgb);
+
+  --bs-body-color: var(--ai-text);
+  --bs-body-bg: var(--ai-dark-bg);
+  --bs-border-color: var(--ai-border);
+  --bs-border-radius: 0.375rem; /* Default 6px */
+  --bs-border-radius-lg: 0.5rem; /* Default 8px */
+  --bs-box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
+  --bs-box-shadow-sm: 0 0.125rem 0.25rem rgba(0,0,0,0.075);
+  --bs-box-shadow-lg: 0 1rem 3rem rgba(0,0,0,0.175);
+}
+
+/* --- Global & Body --- */
+body {
+  margin: 0;
+  background-color: var(--bs-body-bg);
+  color: var(--bs-body-color);
+  font-family: var(--bs-body-font-family);
+  font-size: var(--bs-body-font-size);
+  line-height: var(--bs-body-line-height);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* --- App Layout --- */
+.app-container { min-height: 100vh; display: flex; flex-direction: column; }
+.app-header {
+  height: var(--header-height);
+  flex-shrink: 0;
+  background-color: var(--ai-sidebar-bg) !important; /* Match sidebar for cohesion */
+  border-bottom: 1px solid var(--ai-border);
+  box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+  z-index: 1030;
+}
+.app-brand { font-weight: 700; font-size: 1.25rem; color: var(--ai-primary) !important; }
+.app-brand .brand-icon { font-size: 1.8em; vertical-align: middle; margin-top: -2px; }
+.llm-status-navbar { font-size: 0.8rem; color: var(--ai-text-muted); }
+.llm-status-navbar .text-success { color: var(--ai-success) !important; }
+.llm-status-navbar .text-warning { color: var(--ai-warning) !important; }
+
+.app-body { display: flex; flex-grow: 1; overflow: hidden; position: relative; height: calc(100vh - var(--header-height)); }
+
+/* --- Sidebar (Offcanvas) --- */
+.app-sidebar-offcanvas {
+  transition: width 0.25s ease-in-out !important;
+  background-color: var(--ai-sidebar-bg) !important;
+  border-right: 1px solid var(--ai-border) !important;
+  box-shadow: 3px 0 15px rgba(0,0,0,0.1);
+}
+.app-sidebar-offcanvas .offcanvas-header {
+  border-bottom-color: var(--ai-border);
+  color: var(--ai-text);
+}
+.app-sidebar-offcanvas .btn-close { filter: invert(1) grayscale(100%) brightness(200%); }
+
+.sidebar-custom-body {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 0 !important;
+}
+
+.sidebar-collapse-toggle {
+  border-color: var(--ai-border) !important;
+  color: var(--ai-text-muted) !important;
+  background-color: transparent !important;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+.sidebar-collapse-toggle:hover {
+  color: var(--ai-primary) !important;
+  border-color: var(--ai-primary) !important;
+  background-color: rgba(var(--ai-primary-rgb), 0.1) !important;
+}
+
+.sidebar-content-area {
+  flex-grow: 1;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  /* Padding is now handled by accordion items or .current-file-alert margins */
+  padding: 0.5rem; /* Minimal base padding for spacing around accordion/alert */
+  transition: padding 0.25s ease-in-out;
+}
+
+.sidebar-content-area.content-collapsed {
+  padding: 0.5rem !important;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  overflow-y: hidden;
+}
+
+.sidebar-icon-item {
+  width: 50px;
+  height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 1rem;
+  border-radius: var(--bs-border-radius-lg);
+  background-color: rgba(var(--ai-card-bg-rgb), 0.5);
+  color: var(--ai-text-muted);
+  cursor: pointer;
+  transition: all 0.2s ease-in-out;
+  border: 1px solid transparent;
+}
+.sidebar-icon-item svg { font-size: 1.6rem; }
+.sidebar-icon-item:hover {
+  background-color: var(--ai-card-bg);
+  color: var(--ai-primary);
+  transform: translateY(-2px) scale(1.05);
+  box-shadow: 0 4px 8px rgba(var(--ai-primary-rgb), 0.2);
+  border-color: var(--ai-primary);
+}
+
+/* Shared styling for content within accordion bodies */
+.sidebar-section-content {
+  background-color: rgba(var(--ai-dark-bg-rgb), 0.5); /* Slightly darker than card bg for depth */
+  border: 1px solid var(--ai-border);
+  border-radius: var(--bs-border-radius);
+  padding: 1rem; /* Inner padding for the forms/content */
+  /* margin-bottom: 0.75rem; /* Removed as accordion items manage their own spacing */
+}
+.sidebar-section-content .section-header { /* If used inside */
+  color: var(--ai-primary);
+  font-weight: 600;
+  margin-bottom: 1rem;
+  font-size: 0.95rem;
+}
+
+
+/* Sidebar Accordion Specific Styles */
+.sidebar-accordion.accordion {
+  width: 100%; /* Ensure accordion takes full width of its container */
+}
+
+.sidebar-accordion-item.accordion-item {
+  background-color: transparent;
+  border: none; /* Using flush, so no individual item borders needed */
+  margin-bottom: 0.5rem; /* Space between accordion items */
+}
+.sidebar-accordion-item.accordion-item:last-child {
+  margin-bottom: 0;
+}
+
+.sidebar-accordion-header.accordion-header .accordion-button {
+  background-color: rgba(var(--ai-card-bg-rgb), 0.6);
+  color: var(--ai-text);
+  font-weight: 500;
+  font-size: 0.9rem;
+  padding: 0.75rem 1rem;
+  border-radius: var(--bs-border-radius);
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+  border: 1px solid transparent; /* For hover effect consistency */
+  text-align: left; /* Ensure text aligns left */
+  width: 100%; /* Ensure button takes full width */
+}
+.sidebar-accordion-header.accordion-header .accordion-button:hover {
+  background-color: rgba(var(--ai-card-bg-rgb), 0.8);
+  border-color: var(--ai-border);
+}
+
+.sidebar-accordion-header.accordion-header .accordion-button:not(.collapsed) {
+  background-color: rgba(var(--ai-primary-rgb), 0.1);
+  color: var(--ai-primary);
+  box-shadow: none;
+  border-left: 3px solid var(--ai-primary);
+  padding-left: calc(1rem - 3px); /* Adjust padding for border */
+  border-top-color: transparent; /* Remove other borders if any for active state */
+  border-right-color: transparent;
+  border-bottom-color: transparent;
+}
+
+.sidebar-accordion-header.accordion-header .accordion-button::after { /* Bootstrap's default arrow */
+  filter: invert(70%) sepia(10%) saturate(500%) hue-rotate(180deg) brightness(100%) contrast(90%);
+  background-size: 0.9rem; /* Slightly smaller arrow */
+}
+.sidebar-accordion-header.accordion-header .accordion-button:not(.collapsed)::after {
+  filter: invert(60%) sepia(80%) saturate(2000%) hue-rotate(180deg) brightness(100%) contrast(100%); /* Primary color for arrow */
+}
+
+.sidebar-accordion-header.accordion-header .accordion-icon {
+  font-size: 1.1em;
+  vertical-align: middle;
+  margin-top: -1px;
+  margin-right: 0.6rem !important; /* Ensure space after icon */
+}
+.sidebar-accordion-header.accordion-header .accordion-status-icon {
+  font-size: 1em;
+  vertical-align: middle;
+  /* ms-auto in JSX handles positioning */
+}
+
+.sidebar-accordion-body.accordion-body {
+  padding: 0; /* Remove default accordion body padding */
+  background-color: transparent; /* Ensure body is transparent */
+}
+/* The actual content inside gets padding from .sidebar-section-content */
+
+
+.current-file-alert {
+  margin-top: auto !important; /* Pushes to bottom of flex container */
+  flex-shrink: 0;
+  margin-left: 0.25rem; /* Match sidebar-content-area padding */
+  margin-right: 0.25rem; /* Match sidebar-content-area padding */
+  margin-bottom: 0.25rem; /* Small spacing at the very bottom */
+}
+
+/* --- Main Content Area --- */
+.app-main-content {
+  flex-grow: 1;
+  overflow-y: auto;
+  height: calc(100vh - var(--header-height));
+  background-color: var(--ai-dark-bg);
+  padding: 0 !important;
+  transition: margin-left 0.25s ease-in-out, width 0.25s ease-in-out;
+}
+.main-content-inner {
+  padding-bottom: 3rem !important;
+}
+
+.analysis-card {
+  background-color: var(--ai-card-bg);
+  border: 1px solid var(--ai-border);
+  border-radius: var(--bs-border-radius-lg);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+  transition: transform 0.2s ease-out, box-shadow 0.2s ease-out;
+}
+
+.card-header-ai {
+  background-color: transparent;
+  border-bottom: 1px solid var(--ai-border);
+  padding: 0.9rem 1.25rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--ai-primary);
+  display: flex;
+  align-items: center;
+}
+.card-header-ai .header-icon {
+  margin-right: 0.75rem;
+  color: var(--ai-primary);
+  font-size: 1.3em;
+}
+.analysis-card .card-body { padding: 1.5rem; }
+
+/* --- Bootstrap Component Overrides & Theming --- */
+.card {
+  background-color: var(--ai-card-bg);
+  border-color: var(--ai-border);
+  color: var(--ai-text);
+}
+.form-control, .form-select {
+  background-color: var(--ai-dark-bg);
+  border-color: var(--ai-border);
+  color: var(--ai-text);
+  border-radius: var(--bs-border-radius);
+}
+.form-control:focus, .form-select:focus {
+  background-color: var(--ai-dark-bg);
+  border-color: var(--ai-primary);
+  color: var(--ai-text);
+  box-shadow: 0 0 0 0.2rem var(--ai-glow);
+}
+.form-control::placeholder { color: var(--ai-text-muted); opacity: 0.7; }
+.form-check-input {
+  background-color: var(--ai-border);
+  border-color: rgba(var(--ai-text-rgb), 0.25);
+}
+.form-check-input:checked {
+  background-color: var(--ai-primary);
+  border-color: var(--ai-primary);
+}
+
+/* General Accordion Styles (for main content area, if used) */
+.accordion-button { /* This is a general override, sidebar has more specific ones */
+  background-color: var(--ai-card-bg);
+  color: var(--ai-text);
+  font-weight: 500;
+}
+.accordion-button:not(.collapsed) {
+  background-color: rgba(var(--ai-primary-rgb), 0.1);
+  color: var(--ai-primary);
+  box-shadow: inset 0 -1px 0 var(--ai-border);
+}
+.accordion-button:focus { box-shadow: 0 0 0 0.2rem var(--ai-glow); }
+.accordion-item {
+  border-color: var(--ai-border);
+  background-color: var(--ai-card-bg);
+}
+
+.nav-tabs .nav-link {
+  border-color: var(--ai-border);
+  color: var(--ai-text-muted);
+  transition: color 0.2s ease, border-color 0.2s ease;
+}
+.nav-tabs .nav-link:hover {
+  color: var(--ai-primary);
+  border-color: var(--ai-primary);
+}
+.nav-tabs .nav-link.active {
+  color: var(--ai-primary);
+  background-color: var(--ai-card-bg);
+  border-color: var(--ai-border) var(--ai-border) var(--ai-card-bg);
+  font-weight: 500;
+}
+.table {
+  --bs-table-color: var(--ai-text);
+  --bs-table-bg: transparent;
+  --bs-table-border-color: var(--ai-border);
+  --bs-table-striped-color: var(--ai-text);
   --bs-table-striped-bg: rgba(var(--ai-secondary-rgb), 0.05);
   --bs-table-hover-color: var(--ai-text);
   --bs-table-hover-bg: rgba(var(--ai-primary-rgb), 0.08);
