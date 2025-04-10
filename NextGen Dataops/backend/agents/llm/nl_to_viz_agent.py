@@ -1,100 +1,100 @@
-# backend/agents/llm/nl_to_viz_agent.py
 
-# import traceback # Removed
-import json
-import re
-import logging # Import logging
-from typing import List, Dict, Tuple, Optional, Any
-
-# Import the centralized client function
-try:
-    from agents.llm.llm_client import execute_llm_completion
-except ImportError:
-    # Log this critical error
-    logging.critical("CRITICAL ERROR: Could not import llm_client.py in NLtoVizAgent. LLM functionality will be disabled.")
-    execute_llm_completion = None # Define as None to allow class definition
-
-# Get a logger specific to this module
-logger = logging.getLogger(__name__)
-
-class NLtoVizAgent:
-    """
-    Agent that uses an LLM to interpret natural language visualization requests
-    and output structured parameters for plotting. Includes retry logic for errors.
-    """
-    SUPPORTED_PLOT_TYPES = [
-        'scatter', 'histogram', 'bar', 'line', 'box', 'heatmap'
-    ]
-    MAX_RETRIES = 1 # Max retries on parameter generation failure
-
-    def __init__(self):
-        """Initializes the NLtoVizAgent."""
-        logger.debug("NLtoVizAgent initialized.")
-        pass # Keep pass as __init__ doesn't do anything else now
-
-    def _construct_prompt(self, nl_request: str, schema_str: str,
-                          previous_params_str: Optional[str] = None,
-                          error_feedback: Optional[str] = None) -> List[Dict[str, str]]:
-        """
-        Constructs the prompt messages for the LLM to extract plot parameters.
-        Includes optional fields for retry attempts with error feedback.
-        """
-        supported_types_str = ", ".join(self.SUPPORTED_PLOT_TYPES)
-        system_prompt_header = "You are an expert data visualization assistant. Your task is to interpret a natural language request for a plot and extract the necessary parameters into a structured JSON object."
-
-        schema_section = f"DataFrame Schema (`df`):\n```\n{schema_str}\n```"
-        instructions_header = "Instructions & Constraints:"
-        instructions_body = f"""
-        1.  **Analyze Request:** Understand the user's desired visualization (type, data columns, relationships).
-        2.  **Use Schema:** Identify the exact column names from the schema that correspond to the user's request. Use the column names as they appear in the schema string.
-        3.  **Select Plot Type:** Choose the most appropriate plot type from the 'Available Plot Types' list based on the request and data columns.
-        4.  **Identify Columns:** Determine the column(s) for the X-axis (`x_col`), Y-axis (`y_col`), color (`color_col`), size (`size_col`), etc., as applicable to the plot type and request. Use `null` if a parameter is not applicable or not specified.
-        5.  **Aggregation (for Bar/Line):** If the request implies aggregation (e.g., "total sales per region", "average price over time"), identify the aggregation function (`aggregation`: 'sum', 'mean', 'count', 'median', etc.) and the column to aggregate (`y_col` usually becomes the aggregated value). The `x_col` is typically the grouping column or time axis. For a simple bar chart of counts, `y_col` might be null and `aggregation` would be 'count'.
-        6.  **Output Format:** Respond ONLY with a single, valid JSON object containing the extracted parameters. Do NOT include any explanations, comments, or markdown formatting (like ```json ... ```).
-
-        JSON Output Structure:
+        Example Request 4: "Can you plot profit?" (Ambiguous)
+        Example Output 4:
         {{
-          "plot_type": "...",            // One of [{supported_types_str}]
-          "x_col": "...",                // Column name from schema for X-axis, or null
-          "y_col": "...",                // Column name from schema for Y-axis, or null
-          "color_col": "...",            // Column name for color encoding, or null
-          "size_col": "...",             // Column name for size encoding (scatter), or null
-          "aggregation": "...",          // Aggregation function ('count', 'sum', 'mean', etc.), or null
-          "error": "..."                 // Optional: Error message if request cannot be fulfilled, otherwise null or omit.
-        }}
-
-        Example Request 1: "Show distribution of age using a histogram"
-        Example Output 1:
-        {{
-          "plot_type": "histogram",
-          "x_col": "age",
+          "plot_type": null,
+          "x_col": null,
           "y_col": null,
           "color_col": null,
           "size_col": null,
           "aggregation": null,
-          "error": null
+          "error": "Ambiguous request: Please specify the type of plot and any other relevant columns (e.g., 'histogram of profit', 'profit over time')."
         }}
+        """
+        # --- Retry Logic Prompting ---
+        if previous_params_str and error_feedback:
+            logger.debug("Constructing NL-to-Viz retry prompt with error feedback.") # Replaced print
+            system_prompt_header = "You are an expert data visualization assistant. Your previous attempt to generate plot parameters resulted in an error or invalid output. Please analyze the feedback and provide corrected parameters."
+            user_message_content = f"""
+            Original Natural Language Request: {nl_request.strip()}
 
-        Example Request 2: "Plot total sales per region as a bar chart"
-        Example Output 2:
-        {{
-          "plot_type": "bar",
-          "x_col": "region",
-          "y_col": "sales",
-          "color_col": null,
-          "size_col": null,
-          "aggregation": "sum",
-          "error": null
-        }}
+            DataFrame Schema Used:
+            {schema_str}
 
-        Example Request 3: "Scatter plot of marketing spend vs revenue, colored by campaign"
-        Example Output 3:
-        {{
-          "plot_type": "scatter",
-          "x_col": "marketing_spend",
-          "y_col": "revenue",
-          "color_col": "campaign",
-          "size_col": null,
-          "aggregation": null,
-          "error": null
-        }}
+
+            Your previously generated JSON parameters (which were invalid):
+            ```json
+            {previous_params_str}
+            ```
+
+            Error/Validation Feedback:
+            {error_feedback}
+
+            Please carefully review the schema, original request, previous attempt, and the error feedback. Generate a corrected, valid JSON object containing appropriate plot parameters based only on the schema and the user's original request. Ensure the plot_type is supported ({supported_types_str}) and all specified column names (x_col, y_col, etc.) exist exactly as shown in the schema. If the request truly cannot be fulfilled based on the schema, set the "error" field in the JSON.
+            Respond ONLY with the corrected JSON object.
+            """
+
+        else: # Standard initial prompt
+            user_message_content = f"Natural Language Request: {nl_request.strip()}\n\nPlease generate the plot parameters JSON based on the schema and instructions."
+
+        # --- End Retry Logic ---
+
+        system_prompt = f"{system_prompt_header}\n\n{schema_section}\n\n{instructions_header}\n{instructions_body}"
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message_content.strip()},
+        ]
+        logger.debug(f"NL-to-Viz Prompt Messages (Retry: {bool(previous_params_str)}): User msg start: {user_message_content[:100]}...")
+        return messages
+
+    def _parse_and_validate_json(self, raw_json_str: str, schema_dict: Dict[str, Any]) -> Tuple[Optional[Dict], Optional[str]]:
+        """
+        Parses and validates the JSON string from LLM, handling potential trailing text.
+        Returns (params_dict | None, error_message | None)
+        """
+        if not raw_json_str:
+            return None, "LLM returned an empty response."
+
+        logger.debug(f"Raw JSON from LLM (Viz): '{raw_json_str}'")
+        text_to_parse = raw_json_str.strip()
+
+        # Find the first opening brace '{'
+        start_index = text_to_parse.find('{')
+        if start_index == -1:
+            logger.warning("Could not find starting '{' in LLM response.")
+            return None, "LLM response does not contain a JSON object structure."
+
+        # Find the matching closing brace '}' by tracking brace count
+        brace_level = 0
+        end_index = -1
+        for i, char in enumerate(text_to_parse):
+            if i < start_index: # Skip characters before the first '{'
+                continue
+            if char == '{':
+                brace_level += 1
+            elif char == '}':
+                brace_level -= 1
+                if brace_level == 0:
+                    # Found the matching closing brace for the initial opening brace
+                    end_index = i + 1 # Include the closing brace
+                    break # Stop searching
+
+        if end_index == -1:
+            logger.warning("Could not find matching '}' for the JSON object in LLM response.")
+            return None, "LLM response contains incomplete JSON object structure."
+
+        # Extract the potential JSON block
+        potential_json = text_to_parse[start_index:end_index]
+        logger.debug(f"Extracted potential JSON block: '{potential_json}'")
+
+        try:
+            # Attempt to parse ONLY the extracted block
+            params = json.loads(potential_json)
+            if not isinstance(params, dict):
+                # Should not happen if braces matched, but check anyway
+                raise json.JSONDecodeError("Parsed result is not a dictionary.", potential_json, 0)
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to decode extracted JSON block: {e}. Block: '{potential_json}'")
+            # Return specific error including the block we tried to parse
