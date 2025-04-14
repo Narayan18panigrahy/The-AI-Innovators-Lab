@@ -1,100 +1,100 @@
-# backend/agents/database_agent.py
+        # Handle specific date type if pandas uses it
+        if pd_type_lower == "date": return "DATE"
+        if "bool" in pd_type_lower: return "BOOLEAN"
+        if "object" in pd_type_lower or "string" in pd_type_lower: return "TEXT"
+        if "category" in pd_type_lower: return "TEXT"
+        logger.warning(f"Unmapped pandas dtype '{pd_type_str}', defaulting to TEXT.")
+        return "TEXT"
 
-import psycopg2
-from psycopg2 import sql # For safe SQL query construction
-from psycopg2.extras import execute_values # For potential bulk inserts later (not used in current copy_expert)
-import pandas as pd
-import logging # Import logging
-import re
-import io # For using StringIO with copy_expert
-# import traceback # No longer needed if using logger.error(exc_info=True)
-from typing import List, Dict, Tuple, Any, Optional
-import csv # For CSV handling in copy_expert
+    def create_table_from_df(self, df: pd.DataFrame, table_name: str, schema_name: str = DB_DEFAULT_SCHEMA_NAME) -> tuple[Optional[str], Optional[dict]]:
+        """
+        Creates a PostgreSQL table from a Pandas DataFrame, sanitizing names and loading data.
 
-# Import constants for DB config
-from constants import DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD, DB_DEFAULT_SCHEMA_NAME
+        Args:
+            df: The Pandas DataFrame to load.
+            table_name: The desired base name for the table.
+            schema_name: The database schema to use.
 
-# Get a logger specific to this module
-logger = logging.getLogger(__name__)
+        Returns:
+            (fully_qualified_table_name, schema_dict_for_llm) or (None, None) on failure.
+        """
+        if df is None or df.empty:
+            logger.error("Cannot create table: Input DataFrame is None or empty.")
+            return None, None
 
-class DatabaseAgent:
-    """
-    Agent responsible for interacting with the PostgreSQL database.
-    Manages connections, data loading, query execution, and schema retrieval.
-    """
+        sanitized_table = self._sanitize_name(table_name, is_table_name=True)
+        sanitized_schema = self._sanitize_name(schema_name)
+        fully_qualified_table_name = f"{sanitized_schema}.{sanitized_table}"
+        table_identifier = sql.Identifier(sanitized_schema, sanitized_table)
 
-    def __init__(self):
-        """Initializes the DatabaseAgent with connection parameters."""
-        self.db_config = {
-            "host": DB_HOST,
-            "port": DB_PORT,
-            "dbname": DB_NAME,
-            "user": DB_USER,
-            "password": DB_PASSWORD
-        }
-        self._test_connection() # Test connection on initialization
+        logger.info(f"Preparing to create/replace table '{fully_qualified_table_name}' from DataFrame.")
 
-    def _test_connection(self):
-        """Attempts a connection to verify credentials and reachability."""
+        columns_defs = []
+        df_schema_for_llm = {'table_name': fully_qualified_table_name, 'columns': {}}
+        renamed_columns_map = {}
+        final_column_names_for_df = []
+        seen_sanitized_names = set()
+
+        for col in df.columns:
+            original_col_name = str(col) # Ensure column name is string
+            sanitized_col = self._sanitize_name(original_col_name)
+            # Handle potential duplicate sanitized column names robustly
+            final_sanitized_col = sanitized_col
+            count = 1
+            while final_sanitized_col in seen_sanitized_names:
+                suffix = f"_{count}"
+                max_base_len = 63 - len(suffix)
+                final_sanitized_col = f"{sanitized_col[:max_base_len]}{suffix}"
+                count += 1
+            seen_sanitized_names.add(final_sanitized_col)
+
+            if final_sanitized_col != original_col_name: # Log only if renamed
+                logger.debug(f"Sanitizing column '{original_col_name}' to '{final_sanitized_col}'")
+
+            final_column_names_for_df.append(final_sanitized_col)
+            renamed_columns_map[original_col_name] = final_sanitized_col
+
+            sql_type = self._map_pandas_dtype_to_sql(str(df[original_col_name].dtype))
+            # Use sql.Identifier for column names in CREATE TABLE statement
+            columns_defs.append(sql.SQL("{} {}").format(sql.Identifier(final_sanitized_col), sql.SQL(sql_type)))
+            # Store schema info for LLM using the final sanitized name
+            df_schema_for_llm['columns'][final_sanitized_col] = {'original_name': sanitized_col, 'sql_type': sql_type}
+            logger.debug(f"Column '{original_col_name}' mapped to '{final_sanitized_col}' with type '{sql_type}'")
+
+        # Create a copy WITH the new column names for loading
+        df_copy = df.copy()
+        df_copy.columns = final_column_names_for_df
+
+        # --- Prepare SQL Statements ---
+        create_table_sql = sql.SQL("CREATE TABLE {} ({})").format(
+            table_identifier,
+            sql.SQL(', ').join(columns_defs)
+        )
+        drop_table_sql = sql.SQL("DROP TABLE IF EXISTS {} CASCADE").format(table_identifier)
+        create_schema_sql = sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(sanitized_schema))
+        cols_sql_identifiers = sql.SQL(', ').join(map(sql.Identifier, final_column_names_for_df))
+        # Use E'\t' for tab delimiter, \\N for NULL
+        copy_sql_template = sql.SQL("COPY {} ({}) FROM STDIN WITH (FORMAT CSV, DELIMITER E'\\t', NULL '\\N')").format(
+             table_identifier,
+             cols_sql_identifiers
+        )
+
+        # --- Execute Transaction ---
         conn = None
         try:
             conn = self.get_connection()
-            if conn:
-                logger.info(f"Successfully tested connection to PostgreSQL database '{DB_NAME}' on {DB_HOST}:{DB_PORT}.")
-            else:
-                # Error logged by get_connection
-                pass
-        except Exception as e:
-             # Error logged by get_connection
-             pass # Avoid redundant logging
-        finally:
-            if conn: conn.close()
+            if not conn: return None, None
+            conn.autocommit = False # Ensure transaction control
+            with conn.cursor() as cur:
+                logger.debug(f"Ensuring schema '{sanitized_schema}' exists...")
+                cur.execute(create_schema_sql)
 
-    def get_connection(self):
-        """Establishes and returns a new connection to the PostgreSQL database."""
-        try:
-            conn = psycopg2.connect(**self.db_config)
-            logger.debug("PostgreSQL connection established.")
-            return conn
-        except psycopg2.OperationalError as e:
-            logger.error(f"PostgreSQL Connection Error: Unable to connect. Check credentials, host ({DB_HOST}:{DB_PORT}), database ('{DB_NAME}'), and server status. Error: {e}", exc_info=False) # Don't need full traceback for common connection errors
-            return None
-        except Exception as e:
-            logger.error(f"PostgreSQL Connection Error: An unexpected error occurred. {e}", exc_info=True)
-            return None
+                logger.debug(f"Dropping table if exists: {fully_qualified_table_name}")
+                cur.execute(drop_table_sql)
 
-    def _sanitize_name(self, name: str, is_table_name=False) -> str:
-        """
-        Sanitizes a name for PostgreSQL (lowercase, underscores, no leading numbers, max length).
-        """
-        if not isinstance(name, str): name = str(name)
-        # Replace non-alphanumeric characters (allowing underscores) with underscore
-        sanitized = re.sub(r'[^a-zA-Z0-9_]+', '_', name)
-        # Remove leading/trailing underscores
-        sanitized = sanitized.strip('_')
-        # Prepend underscore if starts with a digit
-        if sanitized and sanitized[0].isdigit():
-            sanitized = '_' + sanitized
-        # Convert to lowercase
-        sanitized = sanitized.lower()
-        # Handle empty names
-        if not sanitized:
-            sanitized = "unnamed_table" if is_table_name else "unnamed_column"
-        # Truncate to PostgreSQL's default identifier limit (usually 63)
-        max_len = 63
-        if len(sanitized) > max_len:
-             logger.warning(f"Identifier '{sanitized}' truncated to {max_len} characters.")
-             sanitized = sanitized[:max_len]
-        return sanitized
+                logger.debug(f"Creating table: {fully_qualified_table_name}")
+                logger.debug(f"Create Table SQL: {create_table_sql.as_string(cur)}")
+                cur.execute(create_table_sql)
 
-    def _map_pandas_dtype_to_sql(self, pd_type_str: str) -> str:
-        """Maps pandas dtype string to a suitable PostgreSQL data type string."""
-        pd_type_lower = pd_type_str.lower()
-        if "int64" in pd_type_lower: return "BIGINT"
-        if "int32" in pd_type_lower: return "INTEGER"
-        if "int16" in pd_type_lower: return "SMALLINT"
-        if pd_type_lower.startswith("int"): return "INTEGER"
-        if "float64" in pd_type_lower: return "DOUBLE PRECISION"
-        if "float32" in pd_type_lower: return "REAL"
-        if pd_type_lower.startswith("float"): return "REAL"
-        if "datetime64[ns" in pd_type_lower or "timestamp" in pd_type_lower: return "TIMESTAMP WITHOUT TIME ZONE"
+                # Load data using copy_expert
+                logger.debug(f"Preparing data buffer for COPY into {fully_qualified_table_name}...")
