@@ -1,100 +1,71 @@
+            return None, f"LLM response contained invalid JSON structure: {e}. Tried to parse: '{potential_json[:100]}...'"
 
-        Example Request 4: "Can you plot profit?" (Ambiguous)
-        Example Output 4:
-        {{
-          "plot_type": null,
-          "x_col": null,
-          "y_col": null,
-          "color_col": null,
-          "size_col": null,
-          "aggregation": null,
-          "error": "Ambiguous request: Please specify the type of plot and any other relevant columns (e.g., 'histogram of profit', 'profit over time')."
-        }}
+
+        # --- Validation ---
+        if params.get("error"):
+            logger.warning(f"LLM indicated an error in parameters: {params['error']}")
+            return None, f"LLM indicated an error: {params['error']}" # Treat LLM error as validation failure
+
+        plot_type = params.get("plot_type")
+        if not plot_type: return None, "LLM response missing required 'plot_type'."
+        if plot_type not in self.SUPPORTED_PLOT_TYPES: return None, f"Unsupported plot type '{plot_type}'. Supported: {', '.join(self.SUPPORTED_PLOT_TYPES)}."
+
+        valid_columns = list(schema_dict.get("columns", {}).keys()) if schema_dict and isinstance(schema_dict.get("columns"), dict) else []
+        if not valid_columns: return None, "Schema dictionary missing/invalid for column validation."
+        cols_to_check = ["x_col", "y_col", "color_col", "size_col"]
+        for col_key in cols_to_check:
+            col_name = params.get(col_key)
+            if col_name is not None and col_name not in valid_columns: return None, f"Invalid column '{col_name}' for '{col_key}'. Valid: {', '.join(valid_columns)}."
+
+        x_col = params.get("x_col"); y_col = params.get("y_col"); aggregation = params.get("aggregation")
+        if plot_type == 'histogram' and not x_col: return None, "Histogram requires 'x_col'."
+        if plot_type in ['scatter', 'line'] and (not x_col or not y_col): return None, f"{plot_type.capitalize()} typically requires 'x_col' and 'y_col'."
+        if plot_type == 'bar' and not x_col: return None, "Bar plot requires 'x_col'."
+        if plot_type == 'box' and not x_col: return None, "Box plot typically requires 'x_col'."
+        if aggregation and not y_col and aggregation != 'count': return None, f"Aggregation '{aggregation}' typically requires 'y_col' (unless 'count')."
+
+        logger.debug(f"Validated plot parameters: {params}")
+        return params, None # Success
+
+    def generate_viz_params(self, nl_request: str, schema_str: str, llm_config: Dict, schema_dict: Dict[str, Any]) -> Tuple[Optional[Dict], Optional[str]]:
         """
-        # --- Retry Logic Prompting ---
-        if previous_params_str and error_feedback:
-            logger.debug("Constructing NL-to-Viz retry prompt with error feedback.") # Replaced print
-            system_prompt_header = "You are an expert data visualization assistant. Your previous attempt to generate plot parameters resulted in an error or invalid output. Please analyze the feedback and provide corrected parameters."
-            user_message_content = f"""
-            Original Natural Language Request: {nl_request.strip()}
+        Generates visualization parameters using LLM, with retry logic.
 
-            DataFrame Schema Used:
-            {schema_str}
+        Args:
+            nl_request: The natural language request for visualization.
+            schema_str: String representation of the DataFrame schema.
+            llm_config: Dictionary containing provider, model, credentials.
+            schema_dict: Dictionary representation of schema for validation.
 
-
-            Your previously generated JSON parameters (which were invalid):
-            ```json
-            {previous_params_str}
-            ```
-
-            Error/Validation Feedback:
-            {error_feedback}
-
-            Please carefully review the schema, original request, previous attempt, and the error feedback. Generate a corrected, valid JSON object containing appropriate plot parameters based only on the schema and the user's original request. Ensure the plot_type is supported ({supported_types_str}) and all specified column names (x_col, y_col, etc.) exist exactly as shown in the schema. If the request truly cannot be fulfilled based on the schema, set the "error" field in the JSON.
-            Respond ONLY with the corrected JSON object.
-            """
-
-        else: # Standard initial prompt
-            user_message_content = f"Natural Language Request: {nl_request.strip()}\n\nPlease generate the plot parameters JSON based on the schema and instructions."
-
-        # --- End Retry Logic ---
-
-        system_prompt = f"{system_prompt_header}\n\n{schema_section}\n\n{instructions_header}\n{instructions_body}"
-
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message_content.strip()},
-        ]
-        logger.debug(f"NL-to-Viz Prompt Messages (Retry: {bool(previous_params_str)}): User msg start: {user_message_content[:100]}...")
-        return messages
-
-    def _parse_and_validate_json(self, raw_json_str: str, schema_dict: Dict[str, Any]) -> Tuple[Optional[Dict], Optional[str]]:
+        Returns:
+            (params_dict | None, error_message | None) tuple.
         """
-        Parses and validates the JSON string from LLM, handling potential trailing text.
-        Returns (params_dict | None, error_message | None)
-        """
-        if not raw_json_str:
-            return None, "LLM returned an empty response."
+        logger.debug(f"Generating viz params for request: '{nl_request[:100]}...'")
+        if execute_llm_completion is None: return None, "LLM client function not available."
+        if not all([nl_request, schema_str, llm_config, schema_dict]): return None, "Missing input(s)."
 
-        logger.debug(f"Raw JSON from LLM (Viz): '{raw_json_str}'")
-        text_to_parse = raw_json_str.strip()
+        last_error = None; last_attempt_json = None
 
-        # Find the first opening brace '{'
-        start_index = text_to_parse.find('{')
-        if start_index == -1:
-            logger.warning("Could not find starting '{' in LLM response.")
-            return None, "LLM response does not contain a JSON object structure."
+        for attempt in range(self.MAX_RETRIES + 1):
+            is_retry = attempt > 0; logger.info(f"Viz Params Attempt #{attempt + 1} (Retry: {is_retry})")
+            messages = self._construct_prompt(nl_request, schema_str, last_attempt_json, last_error)
+            logger.debug(f"Prompt messages: {messages}") # Replaced print
+            temperature = 0.2 if not is_retry else 0.3; max_tokens = 300
 
-        # Find the matching closing brace '}' by tracking brace count
-        brace_level = 0
-        end_index = -1
-        for i, char in enumerate(text_to_parse):
-            if i < start_index: # Skip characters before the first '{'
-                continue
-            if char == '{':
-                brace_level += 1
-            elif char == '}':
-                brace_level -= 1
-                if brace_level == 0:
-                    # Found the matching closing brace for the initial opening brace
-                    end_index = i + 1 # Include the closing brace
-                    break # Stop searching
+            raw_json_str, llm_error = execute_llm_completion(
+                llm_config=llm_config, messages=messages, temperature=temperature, max_tokens=max_tokens
+            )
+            logger.debug(f"Raw JSON response nl to viz: {raw_json_str}") # Replaced print
 
-        if end_index == -1:
-            logger.warning("Could not find matching '}' for the JSON object in LLM response.")
-            return None, "LLM response contains incomplete JSON object structure."
+            if llm_error: logger.error(f"LLM client error to viz attempt {attempt+1}: {llm_error}"); last_error = llm_error; last_attempt_json = None;
+            elif raw_json_str:
+                # Call the validation function
+                validated_params, validation_error = self._parse_and_validate_json(raw_json_str, schema_dict)
+                if validation_error: logger.warning(f"Validation failed attempt {attempt+1}: {validation_error}. Raw: '{raw_json_str[:200]}...'"); last_error = validation_error; last_attempt_json = raw_json_str;
+                else: logger.info("Plot parameters validated successfully."); return validated_params, None # SUCCESS
+            else: logger.warning(f"LLM returned empty content attempt {attempt+1}."); last_error = "LLM empty content."; last_attempt_json = None;
 
-        # Extract the potential JSON block
-        potential_json = text_to_parse[start_index:end_index]
-        logger.debug(f"Extracted potential JSON block: '{potential_json}'")
+            if attempt >= self.MAX_RETRIES: break # Exit loop after last retry
 
-        try:
-            # Attempt to parse ONLY the extracted block
-            params = json.loads(potential_json)
-            if not isinstance(params, dict):
-                # Should not happen if braces matched, but check anyway
-                raise json.JSONDecodeError("Parsed result is not a dictionary.", potential_json, 0)
-
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to decode extracted JSON block: {e}. Block: '{potential_json}'")
-            # Return specific error including the block we tried to parse
+        logger.error(f"Failed viz params after {self.MAX_RETRIES + 1} attempts. Last error: {last_error}")
+        return None, f"Failed after retries. Last error: {last_error or 'Unknown failure.'}"
