@@ -1,0 +1,37 @@
+# Core Streamlit and Data Handling
+streamlit
+pandas
+numpy
+
+# --- LLM Interaction ---
+# Used for OpenAI, Azure OpenAI (legacy mode), Nvidia NIM, OpenRouter etc.
+
+# Data Profiling & Analysis
+scikit-learn
+scipy
+
+# Visualization
+matplotlib
+seaborn
+
+# Text Analysis (NER)
+spacy
+# Note: Download model: python -m spacy download en_core_web_sm
+
+# PDF Report Generation
+fpdf2
+
+# --- Database Interaction --- 
+psycopg2-binary>=2.9.0 # PostgreSQL adapter
+
+# Excel File Reading
+openpyxl
+openai
+flask
+flask_session
+flask_cors
+
+# (Optional Dev Tools)
+# black
+# ruff
+# pytest
